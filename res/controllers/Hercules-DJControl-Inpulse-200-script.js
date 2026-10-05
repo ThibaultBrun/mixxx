@@ -3,9 +3,13 @@
 // ***************************************************************************
 // * Mixxx mapping script file for the Hercules DJControl Inpulse 200.
 // * Author: DJ Phatso, contributions by Kerrick Staley
-// * Version 1.2 (March 2020)
+// * Version 1.3
 // * Forum: https://www.mixxx.org/forums/viewtopic.php?f=7&t=12592
 // * Wiki: https://mixxx.org/wiki/doku.php/hercules_djcontrol_inpulse_200
+//
+// Changes to v1.3
+// - Beatmatch guide: the tempo and beat-align LEDs show which deck to speed up/slow down
+//   and which way to nudge the jog wheel (they used to show the track end warning).
 //
 // Changes to v1.2
 // - Code cleanup.
@@ -40,6 +44,10 @@ DJCi200.scratchShiftMultiplier = 4;
 // How fast bending is.
 DJCi200.bendScale = 1.0;
 
+// Beatmatch guide tolerances
+DJCi200.beatmatchTempoTolerance = 0.1; // BPM: tempo LEDs turn off if decks are less than 0.1 BPM apart
+DJCi200.beatmatchAlignTolerance = 0.02; // beats: align LEDs turn off if decks are less than 0.02 beats apart
+
 // Other scratch related options
 DJCi200.kScratchActionNone = 0;
 DJCi200.kScratchActionScratch = 1;
@@ -70,6 +78,16 @@ DJCi200.init = function() {
     engine.softTakeover("[Channel2]", "rate", true);
     engine.softTakeoverIgnoreNextValue("[Channel1]", "rate");
     engine.softTakeoverIgnoreNextValue("[Channel2]", "rate");
+
+    // Beatmatch guide
+    for (const group of ["[Channel1]", "[Channel2]"]) {
+        engine.makeConnection(group, "bpm", DJCi200.updateBeatmatchTempoLED);
+        // Update all beatmatch LEDs when a track is played/paused
+        engine.makeConnection(group, "play", DJCi200.updateBeatmatchTempoLED);
+        engine.makeConnection(group, "play", DJCi200.updateBeatmatchAlignLED);
+    }
+    // One connection is enough: the align LEDs are only lit when both decks are playing
+    engine.makeConnection("[Channel1]", "beat_distance", DJCi200.updateBeatmatchAlignLED);
 
     //Set effects Levels - Dry/Wet
     engine.setParameter("[EffectRack1_EffectUnit1_Effect1]", "meta", 0.6);
@@ -180,7 +198,54 @@ DJCi200.bendWheel = function(channel, control, value, _status, _group) {
         "[Channel" + channel + "]", "jog", interval * DJCi200.bendScale);
 };
 
+// Beatmatch guide, tempo LEDs (pitch fader arrows):
+// tell the user to slow down the faster deck and speed up the slower one.
+DJCi200.updateBeatmatchTempoLED = function(_value, _group, _control) {
+    const deck1Tempo = engine.getValue("[Channel1]", "bpm");
+    const deck2Tempo = engine.getValue("[Channel2]", "bpm");
+    let direction = 0;
+    if (DJCi200.bothDecksPlaying() &&
+        Math.abs(deck1Tempo - deck2Tempo) >= DJCi200.beatmatchTempoTolerance) {
+        direction = deck1Tempo > deck2Tempo ? 1 : -1;
+    }
+    DJCi200.setBeatmatchLEDs(0x1E, 0x1F, direction);
+};
+
+// Beatmatch guide, beat-align LEDs (jog wheel arrows):
+// tell the user which way to nudge each deck so that the beats line up.
+DJCi200.updateBeatmatchAlignLED = function(_value, _group, _control) {
+    // beat_distance restarts at 0 on every beat, so 0.98 and 0.01 are almost aligned
+    let difference = engine.getValue("[Channel1]", "beat_distance") -
+        engine.getValue("[Channel2]", "beat_distance");
+    if (difference > 0.5) {
+        difference -= 1;
+    } else if (difference < -0.5) {
+        difference += 1;
+    }
+    let direction = 0;
+    if (DJCi200.bothDecksPlaying() &&
+        Math.abs(difference) >= DJCi200.beatmatchAlignTolerance) {
+        direction = difference > 0 ? 1 : -1;
+    }
+    DJCi200.setBeatmatchLEDs(0x1D, 0x1C, direction);
+};
+
+DJCi200.bothDecksPlaying = function() {
+    return engine.getValue("[Channel1]", "play") > 0 && engine.getValue("[Channel2]", "play") > 0;
+};
+
+// direction > 0: deck A is ahead (or faster), < 0: deck B is, 0: all LEDs off.
+// Same LED logic as the DJControl Inpulse 300 mapping.
+DJCi200.setBeatmatchLEDs = function(firstNote, secondNote, direction) {
+    midi.sendShortMsg(0x91, firstNote, direction > 0 ? 0x7F : 0x00);
+    midi.sendShortMsg(0x91, secondNote, direction < 0 ? 0x7F : 0x00);
+    midi.sendShortMsg(0x92, firstNote, direction < 0 ? 0x7F : 0x00);
+    midi.sendShortMsg(0x92, secondNote, direction > 0 ? 0x7F : 0x00);
+};
+
 DJCi200.shutdown = function() {
+    DJCi200.setBeatmatchLEDs(0x1E, 0x1F, 0);
+    DJCi200.setBeatmatchLEDs(0x1D, 0x1C, 0);
     midi.sendShortMsg(0xB0, 0x7F, 0x7E);
     midi.sendShortMsg(0x90, 0x04, 0x00);
 };
